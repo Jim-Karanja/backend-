@@ -82,12 +82,36 @@ This prototype has no login/authentication layer; the local commands bind to loo
 ```dotenv
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_API_STYLE=responses
 ```
 
-The frontend's Classify/Reclassify button processes one complaint; Classify next 10 processes
-oldest unclassified complaints across all filters. Classification runs only when requested,
-including in demo mode, and uses the API account associated with your key. Keys are never
-returned to browser/MCP clients. Configuration status reports presence, not verified access.
+`OPENAI_BASE_URL` points the client at any OpenAI-compatible endpoint (default OpenAI).
+`OPENAI_API_STYLE` selects the request shape: `responses` uses the OpenAI `/responses` API
+with Structured Outputs; `chat` uses `/chat/completions` with `response_format` JSON schema,
+for OpenAI-compatible gateways. For OpenCode Console use
+`OPENAI_BASE_URL=https://opencode.ai/inference/openai/v1` — free models there are only
+callable from inside OpenCode, so a paid Console key is required for external use.
+
+Classification runs automatically (see Background classification); the dashboard displays
+category, urgency and reason as results arrive and exposes no manual controls. Classification
+uses the API account associated with your key. Keys are never returned to browser/MCP clients.
+Configuration status reports presence, not verified access.
+
+### Background classification
+
+```dotenv
+AUTO_CLASSIFY=true
+AUTO_CLASSIFY_INTERVAL=300
+AUTO_CLASSIFY_BATCH=10
+```
+
+When `AUTO_CLASSIFY` is enabled and `OPENAI_API_KEY` is set, the server classifies the oldest
+`AUTO_CLASSIFY_BATCH` unclassified complaints every `AUTO_CLASSIFY_INTERVAL` seconds (minimum
+30) in a background task started with the app. Failures are logged and the timer keeps
+running; the inbox only changes when a batch succeeds. `/api/setup` reports the timer under
+`ai.auto_classify`. The dashboard polls every 15 seconds while it is open and no dialog is
+in use, so automatic classifications appear without a reload.
 
 OpenAI receives text and temporary references, not author hashes or raw platform records.
 Text itself may contain personal information. The request uses `store=false` and
@@ -98,7 +122,7 @@ Existing status, drafts and response timestamps are preserved. Results are sugge
 for review, not verified findings or automatic replies.
 
 Urgency: **1 Low, 2 Normal, 3 Medium, 4 High, 5 Critical**. Categories cover telecom and
-M-Pesa services. No key is needed to browse the demo; AI classification awaits a valid key.
+M-Pesa services. AI classification awaits a valid key.
 
 ## API and MCP
 

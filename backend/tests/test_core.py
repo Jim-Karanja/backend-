@@ -1,8 +1,11 @@
+import asyncio
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from hub import ai, demo
+from hub import scheduler as hub_scheduler
 from hub.errors import HubError
 from hub.store import MemoryStore, public_view
 
@@ -114,6 +117,48 @@ class ClassificationTests(unittest.TestCase):
             return self.fake()(key, payload)
         result = ai.classify_batch(self.store, settings(), 2, caller)
         self.assertEqual((result["classified"], result["skipped_changed"]), (1, 1))
+
+    def test_chat_style_uses_chat_completions_payload(self):
+        chat = SimpleNamespace(openai_api_key="k", openai_model="m", openai_api_style="chat")
+        captured = {}
+
+        def caller(key, payload):
+            captured.update(payload)
+            rows = json.loads(payload["messages"][1]["content"])
+            results = [{"ref": r["ref"], "category": "Voice & calls", "urgency": 1, "reason": "ok"} for r in rows]
+            return {"choices": [{"message": {"content": json.dumps({"results": results})}}]}
+
+        result = ai.classify_batch(self.store, chat, 2, caller)
+        self.assertEqual(result["classified"], 2)
+        self.assertNotIn("input", captured)
+        self.assertEqual(captured["response_format"]["type"], "json_schema")
+
+    def test_parse_response_accepts_chat_and_fenced_json(self):
+        refs = {"c1": {"text": "x"}}
+        body = json.dumps({"results": [{"ref": "c1", "category": "Other", "urgency": 3, "reason": "r"}]})
+        parsed = ai.parse_response({"choices": [{"message": {"content": f"```json\n{body}\n```"}}]}, refs)
+        self.assertEqual(parsed["c1"], ("Other", 3, "r"))
+
+
+class AutoClassifyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_loop_keeps_running_after_errors(self):
+        calls = []
+
+        def fake_batch(store, settings, limit):
+            calls.append(limit)
+            if len(calls) == 1:
+                raise HubError(502, "boom")
+            return {"classified": 1, "skipped_changed": 0, "has_more": False}
+
+        settings = SimpleNamespace(auto_classify_interval=0.01, auto_classify_batch=7)
+        with patch.object(hub_scheduler.ai, "classify_batch", fake_batch):
+            task = asyncio.create_task(hub_scheduler.auto_classify_loop(object(), settings))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[0], 7)
 
 
 if __name__ == "__main__":

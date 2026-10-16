@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest.mock import patch
 
 try:
     from fastapi.testclient import TestClient
@@ -12,6 +14,10 @@ except ImportError:
 @unittest.skipUnless(HAVE_FASTAPI, "fastapi/httpx not installed")
 class HttpTests(unittest.TestCase):
     def setUp(self):
+        # Isolate from the developer's backend/.env: no AI key so classify reports 400.
+        env = patch.dict(os.environ, {"OPENAI_API_KEY": "", "OPENAI_API_STYLE": "responses"})
+        env.start()
+        self.addCleanup(env.stop)
         self.client = TestClient(create_app(MemoryStore()))
 
     def test_setup_overview_and_pages(self):
@@ -19,6 +25,8 @@ class HttpTests(unittest.TestCase):
         setup = self.client.get("/api/setup").json()
         self.assertTrue(setup["demo"])
         self.assertEqual(setup["storage"], "memory")
+        self.assertIn("auto_classify", setup["ai"])
+        self.assertEqual(setup["ai"]["api"], "responses")
         self.assertEqual(self.client.get("/api/overview").json()["total"], 32)
         page = self.client.get("/api/complaints", params={"limit": 20, "offset": 0, "search": ""}).json()
         self.assertEqual((len(page["items"]), page["total"]), (20, 32))

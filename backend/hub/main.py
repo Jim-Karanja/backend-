@@ -1,6 +1,7 @@
 """FastAPI application: REST API for the dashboard plus an MCP endpoint at /mcp/."""
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, Literal, Optional
 
 from fastapi import FastAPI, Query
@@ -51,9 +52,18 @@ class ClassifyRequest(BaseModel):
     external_id: Optional[str] = None
 
 
+def default_store():
+    """DATABASE_URL set -> PostgreSQL (schema applied at startup); otherwise in-memory."""
+    settings = get_settings()
+    if settings.database_url:
+        from .db import open_store
+        return open_store(settings.database_url)
+    return MemoryStore()
+
+
 def create_app(store=None) -> FastAPI:
     load_env()
-    store = store or MemoryStore()
+    store = store or default_store()
     if get_settings().demo_mode:
         demo.seed(store, get_settings().author_salt)
 
@@ -68,11 +78,24 @@ def create_app(store=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app):
-        if mcp is not None:
-            async with mcp.session_manager.run():
+        settings = get_settings()
+        auto_task = None
+        if settings.auto_classify and settings.openai_api_key:
+            from .scheduler import auto_classify_loop
+            auto_task = asyncio.create_task(auto_classify_loop(store, settings))
+            log.info("Auto-classification enabled every %ss (batch %s)",
+                     settings.auto_classify_interval, settings.auto_classify_batch)
+        try:
+            if mcp is not None:
+                async with mcp.session_manager.run():
+                    yield
+            else:
                 yield
-        else:
-            yield
+        finally:
+            if auto_task is not None:
+                auto_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await auto_task
 
     app = FastAPI(title="Complaints Hub API", lifespan=lifespan)
     app.state.store = store
@@ -95,7 +118,11 @@ def create_app(store=None) -> FastAPI:
     def setup():
         s = get_settings()
         return {"demo": s.demo_mode, "storage": store.kind,
-                "ai": {"configured": bool(s.openai_api_key), "model": s.openai_model},
+                "ai": {"configured": bool(s.openai_api_key), "model": s.openai_model,
+                       "base_url": s.openai_base_url, "api": s.openai_api_style,
+                       "auto_classify": {"enabled": s.auto_classify,
+                                         "interval_seconds": s.auto_classify_interval,
+                                         "batch": s.auto_classify_batch}},
                 "mcp": {"path": "/mcp/", "enabled": mcp is not None},
                 "platforms": {"facebook": {"read": bool(s.fb_page_token), "reply": bool(s.fb_page_token)},
                               "x": {"read": bool(s.x_bearer_token), "reply": bool(s.x_user_token)}},
