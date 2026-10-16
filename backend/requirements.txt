@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+httpx
+psycopg[binary]
+pytest
+python-dotenv
+mcp>=1.26,<2
